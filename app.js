@@ -2,35 +2,28 @@
 
 const App = (() => {
 
-  const MAX_BUFFER = 200; // hard cap to avoid memory issues
+  const MAX_BUFFER = 200;
 
   const state = {
     buffer: [],
-    cursor: -1,
+    feedCursor: 0,   // index of currently visible feed item
     fetching: false,
-    gridRenderedCount: 0,
     settings: {
       mediaType: 'image',
       dateFrom: 1900,
       dateTo: 2024,
       bufferSize: 50,
-      viewMode: 'focus'
+      viewMode: 'feed'
     }
   };
 
   const $ = id => document.getElementById(id);
   const el = {
-    focusView:        $('focus-view'),
+    feedView:         $('feed-view'),
+    feedSentinel:     $('feed-sentinel'),
     gridView:         $('grid-view'),
     masonry:          $('masonry'),
     gridSentinel:     $('grid-sentinel'),
-    mediaWrap:        $('media-wrap'),
-    mediaPlaceholder: $('media-placeholder'),
-    mainImage:        $('main-image'),
-    mainVideo:        $('main-video'),
-    metaTitle:        $('meta-title'),
-    metaSub:          $('meta-sub'),
-    metaLink:         $('meta-link'),
     arrowLeft:        $('arrow-left'),
     arrowRight:       $('arrow-right'),
     bufferTrack:      $('buffer-track'),
@@ -53,29 +46,11 @@ const App = (() => {
     dateTo:           $('date-to'),
   };
 
-  // ── Preloader — silently downloads next images into browser cache ──
-  const preloadCache = new Set();
-  function preload(url) {
-    if (!url || preloadCache.has(url)) return;
-    preloadCache.add(url);
-    const img = new Image();
-    img.src = url;
-  }
-
-  function preloadAhead(fromIndex) {
-    // Preload next 3 images ahead
-    for (let i = 1; i <= 3; i++) {
-      const item = state.buffer[fromIndex + i];
-      if (item && item.type === 'image') preload(item.url);
-    }
-  }
-
   // ── Buffer UI ──
   function updateBufferUI() {
     const total = state.settings.bufferSize;
     const loaded = state.buffer.length;
     const pct = Math.min(100, Math.round((loaded / total) * 100));
-
     let fill = el.bufferTrack.querySelector('.buffer-fill');
     if (!fill) {
       fill = document.createElement('div');
@@ -84,6 +59,135 @@ const App = (() => {
     }
     fill.style.width = pct + '%';
     el.bufferCount.textContent = `${loaded} / ${Math.max(loaded, total)}`;
+  }
+
+  // ── Feed: append one item card ──
+  function appendFeedItem(item, index) {
+    // Remove initial loading placeholder on first item
+    const placeholder = $('feed-loading-placeholder');
+    if (placeholder) placeholder.remove();
+
+    const div = document.createElement('div');
+    div.className = 'feed-item';
+    div.id = `feed-item-${index}`;
+    div.dataset.index = String(index);
+
+    if (item.type === 'image') {
+      const imgArea = document.createElement('div');
+      imgArea.className = 'feed-img-area';
+
+      const skeleton = document.createElement('div');
+      skeleton.className = 'feed-skeleton';
+      skeleton.innerHTML = '<div class="spinner"></div>';
+
+      const img = document.createElement('img');
+      img.className = 'feed-img';
+      img.alt = item.meta.title;
+      img.loading = 'lazy';
+      img.onload = () => {
+        img.classList.add('loaded');
+        skeleton.classList.add('gone');
+      };
+      img.onerror = () => {
+        skeleton.innerHTML = '<span class="placeholder-text">unavailable</span>';
+      };
+      img.src = item.url;
+
+      imgArea.appendChild(skeleton);
+      imgArea.appendChild(img);
+      div.appendChild(imgArea);
+
+    } else if (item.type === 'video') {
+      const imgArea = document.createElement('div');
+      imgArea.className = 'feed-img-area';
+      const video = document.createElement('video');
+      video.controls = true;
+      video.src = item.url;
+      video.style.cssText = 'max-width:100%;max-height:100%;display:block;';
+      imgArea.appendChild(video);
+      div.appendChild(imgArea);
+
+    } else if (item.type === 'audio') {
+      const imgArea = document.createElement('div');
+      imgArea.className = 'feed-img-area feed-audio-area';
+      const label = document.createElement('span');
+      label.style.cssText = 'font-size:10px;letter-spacing:0.15em;color:var(--ink-faint)';
+      label.textContent = 'audio';
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.src = item.url;
+      audio.style.width = '280px';
+      imgArea.appendChild(label);
+      imgArea.appendChild(audio);
+      div.appendChild(imgArea);
+    }
+
+    // Meta bar
+    const meta = document.createElement('div');
+    meta.className = 'feed-meta';
+    const sub = [
+      item.meta.creator || null,
+      item.meta.mediatype,
+      item.meta.date !== '—' ? item.meta.date : null
+    ].filter(Boolean).join(' · ');
+    meta.innerHTML = `
+      <div class="feed-meta-left">
+        <span class="feed-meta-title">${item.meta.title}</span>
+        <span class="feed-meta-sub">${sub}</span>
+      </div>
+      <a class="feed-source-link" href="${item.meta.sourceUrl}" target="_blank" rel="noopener">source ↗</a>`;
+    div.appendChild(meta);
+
+    // Track which item is currently visible
+    feedVisibilityObserver.observe(div);
+
+    // Insert before sentinel (keeps sentinel at the end)
+    el.feedView.insertBefore(div, el.feedSentinel);
+    updateArrows();
+  }
+
+  // ── Feed: observe which item is in view ──
+  let feedVisibilityObserver;
+
+  function setupFeedObserver() {
+    if (feedVisibilityObserver) feedVisibilityObserver.disconnect();
+    feedVisibilityObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const idx = parseInt(entry.target.dataset.index);
+          if (!isNaN(idx)) {
+            state.feedCursor = idx;
+            updateArrows();
+          }
+        }
+      });
+    }, { root: el.feedView, threshold: 0.5 });
+  }
+
+  // ── Feed: load more when sentinel is visible ──
+  let sentinelObserver = null;
+  function setupSentinelObserver() {
+    if (sentinelObserver) sentinelObserver.disconnect();
+    sentinelObserver = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && !state.fetching && state.buffer.length < MAX_BUFFER) {
+        fillBuffer(false);
+      }
+    }, { root: el.feedView, threshold: 0.1 });
+    sentinelObserver.observe(el.feedSentinel);
+  }
+
+  // ── Navigate feed ──
+  function navigate(dir) {
+    const items = el.feedView.querySelectorAll('.feed-item');
+    const next = state.feedCursor + dir;
+    if (next < 0 || next >= items.length) return;
+    items[next].scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function updateArrows() {
+    const items = el.feedView.querySelectorAll('.feed-item');
+    el.arrowLeft.disabled = state.feedCursor <= 0;
+    el.arrowRight.disabled = state.feedCursor >= items.length - 1;
   }
 
   // ── Fetch batch ──
@@ -102,9 +206,18 @@ const App = (() => {
 
       if (replace) {
         state.buffer = [];
-        state.cursor = -1;
-        state.gridRenderedCount = 0;
+        state.feedCursor = 0;
+        // Clear feed items (keep sentinel)
+        el.feedView.querySelectorAll('.feed-item').forEach(n => n.remove());
+        // Restore loading placeholder
+        const ph = document.createElement('div');
+        ph.className = 'feed-loading-placeholder';
+        ph.id = 'feed-loading-placeholder';
+        ph.innerHTML = '<span class="placeholder-text">loading from the archive</span>';
+        el.feedView.insertBefore(ph, el.feedSentinel);
+        // Clear grid
         el.masonry.innerHTML = '';
+        setupFeedObserver();
       }
 
       updateBufferUI();
@@ -113,21 +226,12 @@ const App = (() => {
         if (state.buffer.length >= MAX_BUFFER) break;
         try {
           const item = await Archive.resolveItem(docs[i]);
+          const index = state.buffer.length;
           state.buffer.push(item);
-
-          // Show first item as soon as it arrives
-          if (state.cursor === -1) {
-            state.cursor = 0;
-            showItem(state.buffer[0]);
-            updateArrows();
-            preloadAhead(0);
-          }
-
-          // If grid is open, append new items as they arrive
+          appendFeedItem(item, index);
           if (state.settings.viewMode === 'grid') {
-            appendGridItem(item, state.buffer.length - 1);
+            appendGridItem(item, index);
           }
-
           updateBufferUI();
         } catch (e) {
           // skip silently
@@ -135,166 +239,71 @@ const App = (() => {
       }
     } catch (e) {
       console.error('[archive] fetch error:', e);
-      if (state.buffer.length === 0) {
-        showError('Could not reach the Internet Archive. Check your connection.');
-      }
     } finally {
       state.fetching = false;
     }
   }
 
-  // ── Show item in focus view ──
-  function showItem(item) {
-    if (!item) return;
-
-    el.mediaPlaceholder.innerHTML = '<span class="placeholder-text">loading</span>';
-    el.mediaPlaceholder.classList.add('hidden');
-    el.mainImage.classList.add('hidden');
-    el.mainVideo.classList.add('hidden');
-    el.mediaWrap.querySelectorAll('.img-loading').forEach(n => n.remove());
-
-    if (item.type === 'image') {
-      el.mainImage.classList.remove('hidden');
-      el.mainImage.src = '';
-
-      const spinner = document.createElement('div');
-      spinner.className = 'img-loading';
-      spinner.innerHTML = '<div class="spinner"></div>';
-      el.mediaWrap.appendChild(spinner);
-
-      el.mainImage.onload = () => {
-        spinner.remove();
-        // If image has extreme portrait ratio (taller than 2x width), cap it
-        const ratio = el.mainImage.naturalHeight / el.mainImage.naturalWidth;
-        if (ratio > 2) {
-          el.mainImage.style.objectFit = 'cover';
-          el.mainImage.style.objectPosition = 'center top';
-        } else {
-          el.mainImage.style.objectFit = 'contain';
-          el.mainImage.style.objectPosition = 'center';
-        }
-      };
-      el.mainImage.onerror = () => {
-        spinner.remove();
-        el.mainImage.classList.add('hidden');
-        el.mediaPlaceholder.classList.remove('hidden');
-        el.mediaPlaceholder.innerHTML = '<span class="placeholder-text">image unavailable</span>';
-      };
-      el.mainImage.src = item.url;
-      el.mainImage.alt = item.meta.title;
-
-    } else if (item.type === 'video') {
-      el.mainVideo.classList.remove('hidden');
-      el.mainVideo.src = item.url;
-
-    } else if (item.type === 'audio') {
-      el.mediaPlaceholder.classList.remove('hidden');
-      el.mediaPlaceholder.innerHTML = `
-        <div style="display:flex;flex-direction:column;align-items:center;gap:16px;">
-          <span style="font-size:10px;letter-spacing:0.15em;color:var(--ink-faint)">audio</span>
-          <audio controls style="width:280px;" src="${item.url}"></audio>
-        </div>`;
-    }
-
-    const m = item.meta;
-    el.metaTitle.textContent = m.title;
-    el.metaSub.textContent = [
-      m.creator || null,
-      m.mediatype,
-      m.date !== '—' ? m.date : null
-    ].filter(Boolean).join(' · ');
-    el.metaLink.href = m.sourceUrl;
-  }
-
-  // ── Navigation ──
-  function navigate(dir) {
-    const next = state.cursor + dir;
-    if (next < 0) return;
-
-    if (next >= state.buffer.length) {
-      if (!state.fetching) fillBuffer(false);
-      return;
-    }
-
-    state.cursor = next;
-    showItem(state.buffer[state.cursor]);
-    updateArrows();
-    preloadAhead(state.cursor);
-
-    // Fetch more when getting close to end
-    if (state.buffer.length - state.cursor < 8 && !state.fetching) {
-      fillBuffer(false);
-    }
-  }
-
-  function updateArrows() {
-    el.arrowLeft.disabled = state.cursor <= 0;
-    el.arrowRight.disabled = false;
-  }
-
   // ── Grid mode ──
   function appendGridItem(item, index) {
     if (item.type !== 'image') return;
-
     const div = document.createElement('div');
     div.className = 'grid-item';
-
     const img = document.createElement('img');
     img.src = item.url;
     img.alt = item.meta.title;
     img.loading = 'lazy';
-
     const overlay = document.createElement('div');
     overlay.className = 'grid-overlay';
     overlay.innerHTML = `
       <div class="grid-overlay-title">${item.meta.title}</div>
       <div class="grid-overlay-sub">${item.meta.date} · ${item.meta.mediatype}</div>`;
-
     div.appendChild(img);
     div.appendChild(overlay);
-
-    div.addEventListener('click', () => {
-      state.cursor = index;
-      setViewMode('focus');
-      showItem(item);
-      updateArrows();
-      preloadAhead(index);
-    });
-
-    // Insert before sentinel
+    div.addEventListener('click', () => goToFeedItem(index));
     el.masonry.appendChild(div);
-    state.gridRenderedCount++;
   }
 
   function buildGrid() {
     el.masonry.innerHTML = '';
-    state.gridRenderedCount = 0;
     state.buffer.forEach((item, i) => appendGridItem(item, i));
   }
 
-  // ── Infinite scroll via IntersectionObserver ──
-  let scrollObserver = null;
-  function setupScrollObserver() {
-    if (scrollObserver) scrollObserver.disconnect();
-    scrollObserver = new IntersectionObserver(entries => {
+  function goToFeedItem(index) {
+    setViewMode('feed');
+    const itemEl = $(`feed-item-${index}`);
+    if (itemEl) itemEl.scrollIntoView({ behavior: 'instant' });
+    state.feedCursor = index;
+    updateArrows();
+  }
+
+  // ── Grid infinite scroll ──
+  let gridScrollObserver = null;
+  function setupGridScrollObserver() {
+    if (gridScrollObserver) gridScrollObserver.disconnect();
+    gridScrollObserver = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && !state.fetching && state.buffer.length < MAX_BUFFER) {
         fillBuffer(false);
       }
     }, { root: el.gridView, threshold: 0.1 });
-    scrollObserver.observe(el.gridSentinel);
+    gridScrollObserver.observe(el.gridSentinel);
   }
 
   // ── View mode ──
   function setViewMode(mode) {
     state.settings.viewMode = mode;
-    if (mode === 'focus') {
-      el.focusView.classList.remove('hidden');
+    if (mode === 'feed') {
+      el.feedView.classList.remove('hidden');
       el.gridView.classList.add('hidden');
+      el.arrowLeft.classList.remove('hidden');
+      el.arrowRight.classList.remove('hidden');
     } else {
-      el.focusView.classList.add('hidden');
+      el.feedView.classList.add('hidden');
       el.gridView.classList.remove('hidden');
+      el.arrowLeft.classList.add('hidden');
+      el.arrowRight.classList.add('hidden');
       buildGrid();
-      setupScrollObserver();
+      setupGridScrollObserver();
     }
     document.querySelectorAll('#view-mode-group .pill').forEach(p => {
       p.classList.toggle('active', p.dataset.value === mode);
@@ -311,19 +320,12 @@ const App = (() => {
 
   function applySettings() {
     const fromVal = parseInt(el.dateFrom.value);
-    const toVal = parseInt(el.dateTo.value);
-    state.settings.dateFrom = Math.min(fromVal, toVal);
-    state.settings.dateTo = Math.max(fromVal, toVal);
+    const toVal   = parseInt(el.dateTo.value);
+    state.settings.dateFrom  = Math.min(fromVal, toVal);
+    state.settings.dateTo    = Math.max(fromVal, toVal);
     state.settings.bufferSize = parseInt(el.bufferSizeSlider.value);
     closeSettings();
     fillBuffer(true);
-  }
-
-  function showError(msg) {
-    el.mediaPlaceholder.classList.remove('hidden');
-    el.mediaPlaceholder.innerHTML = `<span class="placeholder-text">${msg}</span>`;
-    el.mainImage.classList.add('hidden');
-    el.mainVideo.classList.add('hidden');
   }
 
   function initPillGroup(groupId, onSelect) {
@@ -339,46 +341,41 @@ const App = (() => {
 
   // ── Keyboard ──
   document.addEventListener('keydown', e => {
-    if (el.settingsOverlay.classList.contains('hidden') && el.menuOverlay.classList.contains('hidden')) {
-      if (e.key === 'ArrowLeft')  navigate(-1);
-      if (e.key === 'ArrowRight') navigate(1);
+    const overlayOpen = !el.settingsOverlay.classList.contains('hidden') ||
+                        !el.menuOverlay.classList.contains('hidden');
+    if (!overlayOpen) {
+      if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   navigate(-1);
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown')  navigate(1);
     }
     if (e.key === 'Escape') { closeSettings(); closeMenu(); closeAbout(); }
   });
 
-  el.settingsOverlay.addEventListener('click', e => {
-    if (e.target === el.settingsOverlay) closeSettings();
-  });
-  el.menuOverlay.addEventListener('click', e => {
-    if (e.target === el.menuOverlay) closeMenu();
-  });
-  el.aboutOverlay.addEventListener('click', e => {
-    if (e.target === el.aboutOverlay) closeAbout();
-  });
+  el.settingsOverlay.addEventListener('click', e => { if (e.target === el.settingsOverlay) closeSettings(); });
+  el.menuOverlay.addEventListener('click',     e => { if (e.target === el.menuOverlay)     closeMenu(); });
+  el.aboutOverlay.addEventListener('click',    e => { if (e.target === el.aboutOverlay)    closeAbout(); });
 
   // ── Init ──
   function init() {
-    el.arrowLeft.addEventListener('click', () => navigate(-1));
-    el.arrowRight.addEventListener('click', () => navigate(1));
+    setupFeedObserver();
+    setupSentinelObserver();
+
+    el.arrowLeft.addEventListener('click',   () => navigate(-1));
+    el.arrowRight.addEventListener('click',  () => navigate(1));
     el.settingsBtn.addEventListener('click', openSettings);
     el.closeSettings.addEventListener('click', closeSettings);
-    el.menuBtn.addEventListener('click', openMenu);
-    el.closeMenu.addEventListener('click', closeMenu);
-    el.aboutBtn.addEventListener('click', openAbout);
-    el.closeAbout.addEventListener('click', closeAbout);
+    el.menuBtn.addEventListener('click',     openMenu);
+    el.closeMenu.addEventListener('click',   closeMenu);
+    el.aboutBtn.addEventListener('click',    openAbout);
+    el.closeAbout.addEventListener('click',  closeAbout);
     el.disclaimerClose.addEventListener('click', () => el.disclaimerPopup.classList.add('hidden'));
-    el.applyBtn.addEventListener('click', applySettings);
+    el.applyBtn.addEventListener('click',    applySettings);
 
     el.bufferSizeSlider.addEventListener('input', () => {
       el.bufferSizeVal.textContent = el.bufferSizeSlider.value;
     });
 
-    initPillGroup('media-type-group', val => {
-      state.settings.mediaType = val;
-    });
-    initPillGroup('view-mode-group', val => {
-      setViewMode(val);
-    });
+    initPillGroup('media-type-group', val => { state.settings.mediaType = val; });
+    initPillGroup('view-mode-group',  val => { setViewMode(val); });
 
     updateArrows();
     updateBufferUI();
