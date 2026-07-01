@@ -35,17 +35,29 @@
     </div>
   </header>
 
-  <!-- FEED VIEW -->
-  <main class="feed-view" id="feed-view">
-    <div class="feed-loading-placeholder" id="feed-loading-placeholder">
-      <span class="placeholder-text">loading from the archive</span>
-    </div>
-    <div class="feed-sentinel" id="feed-sentinel"></div>
-  </main>
+  <!-- MAIN FOCUS VIEW -->
+  <main class="focus-view" id="focus-view">
+    <button class="arrow arrow-left" id="arrow-left" aria-label="Previous">←</button>
 
-  <!-- NAVIGATION ARROWS -->
-  <button class="arrow arrow-left" id="arrow-left" aria-label="Previous">←</button>
-  <button class="arrow arrow-right" id="arrow-right" aria-label="Next">→</button>
+    <div class="media-stage">
+      <div class="media-wrap" id="media-wrap">
+        <div class="media-placeholder" id="media-placeholder">
+          <span class="placeholder-text">loading from the archive</span>
+        </div>
+        <img id="main-image" class="main-image hidden" alt="" />
+        <video id="main-video" class="main-video hidden" controls></video>
+      </div>
+      <div class="media-meta" id="media-meta">
+        <div class="meta-left">
+          <span class="meta-title" id="meta-title">—</span>
+          <span class="meta-sub" id="meta-sub">—</span>
+        </div>
+        <a class="meta-link" id="meta-link" href="#" target="_blank" rel="noopener">source ↗</a>
+      </div>
+    </div>
+
+    <button class="arrow arrow-right" id="arrow-right" aria-label="Next">→</button>
+  </main>
 
   <!-- GRID VIEW -->
   <main class="grid-view hidden" id="grid-view">
@@ -98,7 +110,7 @@
         <div class="setting-group">
           <label class="setting-label">view mode</label>
           <div class="pill-group" id="view-mode-group">
-            <button class="pill active" data-value="feed">feed</button>
+            <button class="pill active" data-value="focus">focus</button>
             <button class="pill" data-value="grid">grid</button>
           </div>
         </div>
