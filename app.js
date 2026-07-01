@@ -171,10 +171,15 @@ const App = (() => {
     const div = document.createElement('div');
     div.className = 'grid-item';
 
+    // Reserve space before image loads — prevents layout jumps
+    const ratios = ['4/3', '1/1', '3/4', '4/5', '3/2'];
+    div.style.aspectRatio = ratios[Math.floor(Math.random() * ratios.length)];
+
     const img = document.createElement('img');
     img.src = item.url;
     img.alt = item.meta.title;
     img.loading = 'lazy';
+    img.onload = () => img.classList.add('loaded');
 
     const overlay = document.createElement('div');
     overlay.className = 'grid-overlay';
@@ -260,28 +265,28 @@ const App = (() => {
 
       updateBufferUI();
 
-      for (let i = 0; i < docs.length; i++) {
-        if (state.buffer.length >= MAX_BUFFER) break;
-        try {
-          const item = await Archive.resolveItem(docs[i]);
-          state.buffer.push(item);
+      // Fire all metadata requests in parallel — much faster than sequential
+      await Promise.allSettled(
+        docs.map(doc =>
+          Archive.resolveItem(doc).then(item => {
+            if (state.buffer.length >= MAX_BUFFER) return;
+            state.buffer.push(item);
 
-          if (state.cursor === -1) {
-            state.cursor = 0;
-            showItem(state.buffer[0]);
-            updateArrows();
-            preloadAhead(0);
-          }
+            if (state.cursor === -1) {
+              state.cursor = 0;
+              showItem(state.buffer[0]);
+              updateArrows();
+              preloadAhead(0);
+            }
 
-          if (state.settings.viewMode === 'grid') {
-            appendGridItem(item, state.buffer.length - 1);
-          }
+            if (state.settings.viewMode === 'grid') {
+              appendGridItem(item, state.buffer.length - 1);
+            }
 
-          updateBufferUI();
-        } catch (e) {
-          // skip silently
-        }
-      }
+            updateBufferUI();
+          })
+        )
+      );
     } catch (e) {
       console.error('[archive] fetch error:', e);
       if (state.buffer.length === 0) {
